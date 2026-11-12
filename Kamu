@@ -1,0 +1,310 @@
+
+/**
+ * Lampa Exclusivo PT-BR
+ * v1.1.0
+ * Samsung TV via Media Station X
+ */
+(function () {
+    'use strict';
+
+    if (window.plugin_lampa_exclusivo_ptbr_ready) return;
+    window.plugin_lampa_exclusivo_ptbr_ready = true;
+
+    var KEY = 'lampa_exclusivo_ptbr_items_v1';
+    var COMPONENT = 'lampa_exclusivo_ptbr';
+
+    function norm(value) {
+        return String(value == null ? '' : value)
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/[_\s]+/g, ' ')
+            .trim();
+    }
+
+    function isPTBR(audio, lang, kind) {
+        var a = norm(audio);
+        var l = norm(lang).replace(/\s/g, '');
+        var k = norm(kind);
+
+        if (k === 'subtitle' || k === 'subtitles' ||
+            k === 'legenda' || k === 'legendas') return false;
+
+        if (/portugal|pt-pt|por-pt/.test(a) ||
+            /^(pt-pt|por-pt)$/.test(l)) return false;
+
+        if (/^(pt-br|por-br|pob|ptbr)$/.test(l)) return true;
+
+        return a === 'pt-br' ||
+            a === 'ptbr' ||
+            a === 'portugues brasil' ||
+            a === 'portugues brasileiro' ||
+            a === 'portugues + sub' ||
+            a === 'portugues';
+    }
+
+    function getItems() {
+        var data;
+        try {
+            data = Lampa.Storage.get(KEY, '[]');
+            if (typeof data === 'string') data = JSON.parse(data);
+            return Array.isArray(data) ? data : [];
+        } catch (e) {
+            return [];
+        }
+    }
+
+    function setItems(items) {
+        try {
+            Lampa.Storage.set(KEY, JSON.stringify(items));
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function escapeHTML(value) {
+        return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
+            return {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }[c];
+        });
+    }
+
+    function notify(message) {
+        if (Lampa.Noty && Lampa.Noty.show) {
+            Lampa.Noty.show(message);
+        } else {
+            window.alert(message);
+        }
+    }
+
+    function addItem(item) {
+        var items = getItems();
+
+        if (!item.title || !item.url ||
+            !/^https:\/\//i.test(item.url)) return false;
+
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].url === item.url) return false;
+        }
+
+        items.push(item);
+        return setItems(items);
+    }
+
+    function Page(object) {
+        var self = this;
+        var activity = object.activity;
+        var items = getItems();
+        var filter = 'all';
+
+        this.create = function () {
+            var html =
+                '<div class="ptbr-page">' +
+                    '<div class="ptbr-head">' +
+                        '<div class="ptbr-title">Lampa Exclusivo PT-BR</div>' +
+                        '<div class="ptbr-sub">Seu catálogo pessoal de séries e filmes com áudio brasileiro</div>' +
+                    '</div>' +
+                    '<div class="ptbr-tabs">' +
+                        '<div class="ptbr-tab selector" data-filter="all">Todos</div>' +
+                        '<div class="ptbr-tab selector" data-filter="series">Séries</div>' +
+                        '<div class="ptbr-tab selector" data-filter="movie">Filmes</div>' +
+                        '<div class="ptbr-tab selector" data-filter="ptbr">PT-BR</div>' +
+                    '</div>' +
+                    '<div class="ptbr-add selector">＋ Adicionar título</div>' +
+                    '<div class="ptbr-list"></div>' +
+                    '<div class="ptbr-note">A classificação usa os metadados cadastrados; confirme a faixa no player. O plugin não fornece vídeos nem detecta áudio por conta própria.</div>' +
+                '</div>';
+
+            self.html = $(html);
+            self.renderList();
+
+            self.html.find('.ptbr-tab').on('hover:enter', function () {
+                filter = $(this).data('filter');
+                self.html.find('.ptbr-tab').removeClass('active');
+                $(this).addClass('active');
+                self.renderList();
+            });
+
+            self.html.find('.ptbr-add').on('hover:enter', function () {
+                self.addDialog();
+            });
+
+            activity.render().html(self.html);
+        };
+
+        this.renderList = function () {
+            var list = self.html.find('.ptbr-list');
+            var html = '';
+
+            items.forEach(function (item, index) {
+                var accepted = isPTBR(item.audio, item.language, 'audio');
+
+                var visible = filter === 'all' ||
+                    filter === item.type ||
+                    (filter === 'ptbr' && accepted);
+
+                if (!visible) return;
+
+                html +=
+                    '<div class="ptbr-item selector" data-index="' + index + '">' +
+                        '<div class="ptbr-item-title">' +
+                            escapeHTML(item.title) +
+                        '</div>' +
+                        '<div class="ptbr-meta">' +
+                            (item.type === 'series' ? 'Série' : 'Filme') +
+                            ' · ' +
+                            (accepted ? 'Rótulo PT-BR aceito' : 'Áudio não confirmado') +
+                        '</div>' +
+                        '<div class="ptbr-meta">' +
+                            escapeHTML(item.audio || 'Faixa não informada') +
+                            (item.language ? ' · ' + escapeHTML(item.language) : '') +
+                        '</div>' +
+                    '</div>';
+            });
+
+            list.html(html || '<div class="ptbr-empty">Nenhum título nesta categoria. Use “Adicionar título”.</div>');
+
+            list.find('.ptbr-item').on('hover:enter', function () {
+                var index = Number($(this).data('index'));
+                var selected = items[index];
+
+                if (selected && selected.url) {
+                    window.open(selected.url, '_blank');
+                }
+            });
+        };
+
+        this.addDialog = function () {
+            var html =
+                '<div class="ptbr-dialog">' +
+                    '<div class="ptbr-dialog-title">Adicionar título ao catálogo</div>' +
+                    '<input class="ptbr-input" name="title" placeholder="Nome do título">' +
+                    '<select class="ptbr-input" name="type">' +
+                        '<option value="series">Série</option>' +
+                        '<option value="movie">Filme</option>' +
+                    '</select>' +
+                    '<input class="ptbr-input" name="url" placeholder="URL HTTPS da fonte">' +
+                    '<input class="ptbr-input" name="audio" placeholder="Faixa: Português, Português + SUB...">' +
+                    '<input class="ptbr-input" name="language" placeholder="Código: pt-BR, por-BR...">' +
+                    '<div class="ptbr-save selector">Salvar</div>' +
+                '</div>';
+
+            var dialog = $(html);
+
+            dialog.find('.ptbr-save').on('hover:enter', function () {
+                var title = dialog.find('[name="title"]').val();
+                var type = dialog.find('[name="type"]').val();
+                var url = dialog.find('[name="url"]').val();
+                var audio = dialog.find('[name="audio"]').val();
+                var language = dialog.find('[name="language"]').val();
+
+                var ok = addItem({
+                    title: String(title || '').trim(),
+                    type: type === 'series' ? 'series' : 'movie',
+                    url: String(url || '').trim(),
+                    audio: String(audio || '').trim(),
+                    language: String(language || '').trim()
+                });
+
+                if (ok) {
+                    items = getItems();
+                    Lampa.Modal.close();
+                    self.renderList();
+                    notify('Título salvo no catálogo PT-BR.');
+                } else {
+                    notify('Não foi possível salvar. Verifique o título, URL HTTPS e duplicidade.');
+                }
+            });
+
+            Lampa.Modal.open({
+                title: 'Lampa Exclusivo PT-BR',
+                html: dialog,
+                size: 'large'
+            });
+        };
+
+        this.start = function () {
+            self.create();
+        };
+
+        this.pause = function () {};
+
+        this.stop = function () {
+            self.html = null;
+        };
+    }
+
+    function addStyles() {
+        var css =
+            '.ptbr-page{padding:2em;color:var(--color-text)}' +
+            '.ptbr-title{font-size:2.2em;font-weight:700;margin-bottom:.25em}' +
+            '.ptbr-sub,.ptbr-note,.ptbr-meta{opacity:.7;font-size:1em}' +
+            '.ptbr-tabs{display:flex;flex-wrap:wrap;gap:.7em;margin:1.5em 0}' +
+            '.ptbr-tab,.ptbr-add,.ptbr-save{padding:.8em 1.2em;background:rgba(127,127,127,.18);border-radius:.35em}' +
+            '.ptbr-tab.active{background:var(--color-accent)}' +
+            '.ptbr-add{display:inline-block;margin-bottom:1em}' +
+            '.ptbr-item{padding:1em;margin:.5em 0;background:rgba(127,127,127,.12);border-radius:.4em}' +
+            '.ptbr-item-title{font-size:1.25em;font-weight:700;margin-bottom:.35em}' +
+            '.ptbr-empty{padding:1.5em;opacity:.7}' +
+            '.ptbr-note{margin-top:1.5em;font-size:.85em}' +
+            '.ptbr-dialog{display:flex;flex-direction:column;gap:.8em;padding:1em}' +
+            '.ptbr-dialog-title{font-size:1.3em;font-weight:700}' +
+            '.ptbr-input{font-size:1em;padding:.8em;border:1px solid rgba(127,127,127,.4);background:var(--color-background);color:var(--color-text);border-radius:.3em}' +
+            '.ptbr-save{text-align:center;background:var(--color-accent)}';
+
+        if (Lampa.Template && Lampa.Template.add) {
+            Lampa.Template.add('ptbr_css', '<style>' + css + '</style>');
+        }
+
+        $('body').append('<style id="lampa-ptbr-style">' + css + '</style>');
+    }
+
+    function init() {
+        if (!window.Lampa || !Lampa.Component || !Lampa.SettingsApi) return;
+
+        addStyles();
+        Lampa.Component.add(COMPONENT, Page);
+
+        Lampa.SettingsApi.addComponent({
+            component: COMPONENT,
+            name: 'Lampa Exclusivo PT-BR',
+            icon: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1 17.9A8 8 0 0 1 4.1 13H11v6.9zM11 11H4.1A8 8 0 0 1 11 4.1V11zm2 8.9V13h6.9a8 8 0 0 1-6.9 6.9zM13 11V4.1a8 8 0 0 1 6.9 6.9H13z"/></svg>'
+        });
+
+        var menuButton = $(
+            '<li class="menu__item selector">' +
+                '<div class="menu__ico">' +
+                    '<svg width="44" height="44" viewBox="0 0 44 44">' +
+                        '<path fill="currentColor" d="M22 4a18 18 0 1 0 0 36 18 18 0 0 0 0-36zm-2 31A13 13 0 0 1 9 24h11v11zm0-15H9A13 13 0 0 1 20 9v11zm4 15V24h11a13 13 0 0 1-11 11zm0-15V9a13 13 0 0 1 11 11H24z"/>' +
+                    '</svg>' +
+                '</div>' +
+                '<div class="menu__text">Lampa Exclusivo PT-BR</div>' +
+            '</li>'
+        );
+
+        menuButton.on('hover:enter', function () {
+            Lampa.Activity.push({
+                url: '',
+                title: 'Lampa Exclusivo PT-BR',
+                component: COMPONENT,
+                page: 1
+            });
+        });
+
+        $('.menu .menu__list').eq(0).append(menuButton);
+    }
+
+    if (window.appready) {
+        init();
+    } else if (window.Lampa && Lampa.Listener) {
+        Lampa.Listener.follow('app', function (event) {
+            if (event.type === 'ready') init();
+        });
+    }
+})();
