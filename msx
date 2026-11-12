@@ -1,0 +1,825 @@
+
+(function () {
+    'use strict';
+
+    if (window.BRASIL_PTBR_PLUGIN) return;
+    window.BRASIL_PTBR_PLUGIN = true;
+
+    var ID = 'brasil_ptbr';
+    var API_KEY = 'brasil_ptbr_api';
+    var CSS_ID = 'brasil-ptbr-estilos';
+
+    var catalogos = {
+        filmes: [],
+        series: []
+    };
+
+    var requisicao = null;
+    var paginaAtual = 1;
+    var tipoAtual = 'filmes';
+    var pesquisaAtual = '';
+    var generoAtual = '';
+    var ordemAtual = 'recentes';
+
+    /* =================================
+       UTILITÁRIOS
+    ================================= */
+
+    function normalizar(valor) {
+        return String(valor || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .trim()
+            .replace(/\s+/g, ' ');
+    }
+
+    function escapar(valor) {
+        return String(valor == null ? '' : valor)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function idiomaValido(valor) {
+        var idioma = normalizar(valor);
+
+        if (
+            idioma.includes('portugal') ||
+            idioma.includes('european portuguese')
+        ) return false;
+
+        return [
+            'pt',
+            'pt-br',
+            'por-br',
+            'portugues',
+            'portugues + sub',
+            'brazilian portuguese',
+            'portuguese brazilian'
+        ].includes(idioma);
+    }
+
+    function tipoValido(valor) {
+        var tipo = normalizar(valor);
+
+        if (['filme', 'filmes', 'movie'].includes(tipo)) {
+            return 'filmes';
+        }
+
+        if (
+            ['serie', 'series', 'série', 'séries', 'tv'].includes(tipo)
+        ) {
+            return 'series';
+        }
+
+        return '';
+    }
+
+    function obterFonte() {
+        return String(
+            Lampa.Storage.get(API_KEY) || ''
+        ).trim();
+    }
+
+    function obterIdiomasAudio(item) {
+        if (!Array.isArray(item.audio_languages)) {
+            return [];
+        }
+
+        return item.audio_languages.filter(function (idioma) {
+            return typeof idioma === 'string' &&
+                idiomaValido(idioma);
+        });
+    }
+
+    function validarItem(item, tipo) {
+        if (!item || !item.id) return false;
+
+        var idiomas = obterIdiomasAudio(item);
+
+        if (!idiomas.length) return false;
+
+        var tipoRecebido = tipoValido(
+            item.type || item.media_type || item.tipo
+        );
+
+        if (tipoRecebido && tipoRecebido !== tipo) {
+            return false;
+        }
+
+        return !!(item.title || item.name);
+    }
+
+    function obterTitulo(item) {
+        return item.title || item.name || 'Sem título';
+    }
+
+    function obterPoster(item) {
+        var url = item.poster_url || item.poster_path || '';
+
+        if (!/^https?:\/\/[^ ]+$/i.test(url)) {
+            return '';
+        }
+
+        return url;
+    }
+
+    function obterGeneros(item) {
+        if (!Array.isArray(item.genres)) return [];
+
+        return item.genres.map(function (genero) {
+            if (typeof genero === 'string') return genero;
+
+            return genero && genero.name
+                ? genero.name
+                : '';
+        }).filter(Boolean);
+    }
+
+    /* =================================
+       NORMALIZAÇÃO
+    ================================= */
+
+    function normalizarLista(resposta, tipo) {
+        if (!resposta || typeof resposta !== 'object') {
+            return [];
+        }
+
+        var lista = Array.isArray(resposta.results)
+            ? resposta.results
+            : Array.isArray(resposta.items)
+                ? resposta.items
+                : [];
+
+        return lista.filter(function (item) {
+            return validarItem(item, tipo);
+        }).map(function (item) {
+            return {
+                id: item.id,
+                type: tipo,
+                title: obterTitulo(item),
+                overview: item.overview || '',
+                poster_url: obterPoster(item),
+                backdrop_path: item.backdrop_path || '',
+                release_date:
+                    item.release_date ||
+                    item.first_air_date || '',
+                vote_average:
+                    Number(item.vote_average) || 0,
+                popularity:
+                    Number(item.popularity) || 0,
+                genres: obterGeneros(item),
+                audio_languages: obterIdiomasAudio(item),
+                original: item
+            };
+        });
+    }
+
+    /* =================================
+       API
+    ================================= */
+
+    function montarURL(tipo, pagina, pesquisa) {
+        var base = obterFonte();
+
+        if (!base) return '';
+
+        var separador = base.indexOf('?') >= 0
+            ? '&'
+            : '?';
+
+        return base + separador +
+            'tipo=' + encodeURIComponent(tipo) +
+            '&page=' + encodeURIComponent(pagina) +
+            '&q=' + encodeURIComponent(pesquisa || '');
+    }
+
+    function cancelarRequisicao() {
+        if (
+            requisicao &&
+            typeof requisicao.clear === 'function'
+        ) {
+            requisicao.clear();
+        }
+
+        requisicao = null;
+    }
+
+    function consultarAPI(tipo, pagina, pesquisa, sucesso, erro) {
+        var url = montarURL(tipo, pagina, pesquisa);
+
+        if (!url) {
+            erro('Configure o endereço da API nas configurações.');
+            return;
+        }
+
+        cancelarRequisicao();
+
+        var atual = new Lampa.Reguest();
+        requisicao = atual;
+
+        atual.get(
+            url,
+            function (resposta) {
+                if (requisicao !== atual) return;
+
+                requisicao = null;
+
+                var lista = normalizarLista(resposta, tipo);
+
+                catalogos[tipo] = lista;
+
+                sucesso(lista, resposta);
+            },
+            function () {
+                if (requisicao !== atual) return;
+
+                requisicao = null;
+
+                erro('Não foi possível acessar a fonte.');
+            }
+        );
+    }
+
+    /* =================================
+       FILTROS E ORDENAÇÃO
+    ================================= */
+
+    function filtrar(lista) {
+        var resultado = lista.slice();
+
+        if (generoAtual) {
+            resultado = resultado.filter(function (item) {
+                return item.genres.some(function (genero) {
+                    return normalizar(genero) ===
+                        normalizar(generoAtual);
+                });
+            });
+        }
+
+        if (pesquisaAtual) {
+            resultado = resultado.filter(function (item) {
+                return normalizar(obterTitulo(item))
+                    .includes(normalizar(pesquisaAtual));
+            });
+        }
+
+        resultado.sort(function (a, b) {
+            if (ordemAtual === 'recentes') {
+                return String(b.release_date)
+                    .localeCompare(String(a.release_date));
+            }
+
+            if (ordemAtual === 'antigos') {
+                return String(a.release_date)
+                    .localeCompare(String(b.release_date));
+            }
+
+            if (ordemAtual === 'avaliacao') {
+                return b.vote_average - a.vote_average;
+            }
+
+            if (ordemAtual === 'popularidade') {
+                return b.popularity - a.popularity;
+            }
+
+            return obterTitulo(a).localeCompare(obterTitulo(b));
+        });
+
+        return resultado;
+    }
+
+    /* =================================
+       ESTILOS
+    ================================= */
+
+    function registrarCSS() {
+        if (document.getElementById(CSS_ID)) return;
+
+        var css = `
+            .brasil-ptbr-tela {
+                width: 100%;
+                padding: 20px;
+                box-sizing: border-box;
+            }
+
+            .brasil-ptbr-abas {
+                display: flex;
+                gap: 15px;
+                margin-bottom: 20px;
+                flex-wrap: wrap;
+            }
+
+            .brasil-ptbr-aba {
+                padding: 12px 22px;
+                background: #292929;
+                border-radius: 7px;
+                color: #fff;
+            }
+
+            .brasil-ptbr-aba.selecionado {
+                background: #168b42;
+            }
+
+            .brasil-ptbr-controles {
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+                margin-bottom: 20px;
+            }
+
+            .brasil-ptbr-controles input,
+            .brasil-ptbr-controles select {
+                padding: 12px;
+                background: #292929;
+                color: #fff;
+                border: 1px solid #555;
+                border-radius: 5px;
+                min-width: 140px;
+            }
+
+            .brasil-ptbr-grade {
+                display: grid;
+                grid-template-columns:
+                    repeat(auto-fill, minmax(145px, 1fr));
+                gap: 16px;
+            }
+
+            .brasil-ptbr-cartao {
+                position: relative;
+                background: #242424;
+                border-radius: 8px;
+                overflow: hidden;
+                color: white;
+            }
+
+            .brasil-ptbr-cartao img {
+                width: 100%;
+                aspect-ratio: 2 / 3;
+                object-fit: cover;
+            }
+
+            .brasil-ptbr-cartao .titulo {
+                padding: 9px;
+                font-size: 14px;
+            }
+
+            .brasil-ptbr-selo {
+                position: absolute;
+                top: 8px;
+                left: 8px;
+                padding: 5px 8px;
+                background: #168b42;
+                color: white;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+
+            .brasil-ptbr-detalhes {
+                padding: 25px;
+                color: white;
+            }
+
+            .brasil-ptbr-mensagem {
+                padding: 25px;
+                text-align: center;
+                color: white;
+            }
+
+            .brasil-ptbr-paginacao {
+                display: flex;
+                gap: 12px;
+                justify-content: center;
+                margin-top: 25px;
+            }
+
+            .brasil-ptbr-botao {
+                padding: 12px 20px;
+                border-radius: 6px;
+                background: #168b42;
+                color: white;
+            }
+
+            .brasil-ptbr-cartao.selector.focus,
+            .brasil-ptbr-botao.focus,
+            .brasil-ptbr-aba.focus {
+                outline: 3px solid white;
+                transform: scale(1.03);
+            }
+        `;
+
+        $('<style>', {
+            id: CSS_ID,
+            text: css
+        }).appendTo('head');
+    }
+
+    /* =================================
+       TELA DE DETALHES
+    ================================= */
+
+    function TelaDetalhesPTBR(object) {
+        var item = object.item || {};
+        var html = $('<div class="brasil-ptbr-detalhes"></div>');
+
+        var titulo = $('<h2></h2>').text(obterTitulo(item));
+        var sinopse = $('<p></p>').text(item.overview || 'Sinopse indisponível.');
+        var audio = $('<p></p>').text(
+            'Áudio confirmado: ' +
+            obterIdiomasAudio(item).join(', ')
+        );
+
+        html.append(titulo, sinopse, audio);
+
+        this.create = function () {
+            return this.render();
+        };
+
+        this.render = function () {
+            return html;
+        };
+
+        this.destroy = function () {
+            html.remove();
+        };
+    }
+
+    /* =================================
+       TELA PRINCIPAL
+    ================================= */
+
+    function TelaPrincipalPTBR(object) {
+        var self = this;
+        var html = $('<div class="brasil-ptbr-tela"></div>');
+        var abas = $('<div class="brasil-ptbr-abas"></div>');
+        var controles = $('<div class="brasil-ptbr-controles"></div>');
+        var grade = $('<div></div>');
+        var paginacao = $('<div class="brasil-ptbr-paginacao"></div>');
+        var mensagem = $('<div class="brasil-ptbr-mensagem"></div>');
+
+        var abaFilmes = $('<div class="selector brasil-ptbr-aba">Filmes PT-BR</div>');
+        var abaSeries = $('<div class="selector brasil-ptbr-aba">Séries PT-BR</div>');
+
+        var busca = $('<input class="selector" placeholder="Pesquisar título">');
+
+        var botaoBuscar = $('<div class="selector brasil-ptbr-botao">Pesquisar</div>');
+
+        var seletorGenero = $('<select class="selector"><option value="">Todos os gêneros</option></select>');
+
+        var seletorOrdem = $(
+            '<select class="selector">' +
+            '<option value="recentes">Mais recentes</option>' +
+            '<option value="antigos">Mais antigos</option>' +
+            '<option value="avaliacao">Melhor avaliação</option>' +
+            '<option value="popularidade">Popularidade</option>' +
+            '<option value="titulo">Título</option>' +
+            '</select>'
+        );
+
+        abas.append(abaFilmes, abaSeries);
+
+        controles.append(
+            busca,
+            botaoBuscar,
+            seletorGenero,
+            seletorOrdem
+        );
+
+        html.append(
+            abas,
+            controles,
+            mensagem,
+            grade,
+            paginacao
+        );
+
+        function atualizarGeneros() {
+            seletorGenero.empty();
+            seletorGenero.append(
+                $('<option></option>').val('').text('Todos os gêneros')
+            );
+
+            var generos = [];
+
+            catalogos[tipoAtual].forEach(function (item) {
+                obterGeneros(item).forEach(function (genero) {
+                    if (!generos.includes(genero)) {
+                        generos.push(genero);
+                    }
+                });
+            });
+
+            generos.sort();
+
+            generos.forEach(function (genero) {
+                seletorGenero.append(
+                    $('<option></option>')
+                        .val(genero)
+                        .text(genero)
+                );
+            });
+        }
+
+        function desenharCartoes(lista) {
+            grade.empty();
+            paginacao.empty();
+
+            if (!lista.length) {
+                mensagem.text(
+                    'Nenhum conteúdo PT-BR confirmado encontrado.'
+                );
+                return;
+            }
+
+            mensagem.empty();
+
+            var porPagina = 20;
+            var totalPaginas = Math.max(
+                1,
+                Math.ceil(lista.length / porPagina)
+            );
+
+            if (paginaAtual > totalPaginas) {
+                paginaAtual = totalPaginas;
+            }
+
+            var inicio = (paginaAtual - 1) * porPagina;
+            var itens = lista.slice(inicio, inicio + porPagina);
+
+            var gradeInterna = $('<div class="brasil-ptbr-grade"></div>');
+
+            itens.forEach(function (item) {
+                var cartao = $('<div class="selector brasil-ptbr-cartao"></div>');
+                var poster = obterPoster(item);
+
+                if (poster) {
+                    $('<img>').attr('src', poster).attr(
+                        'alt',
+                        obterTitulo(item)
+                    ).appendTo(cartao);
+                }
+
+                $('<span class="brasil-ptbr-selo">PT-BR</span>')
+                    .appendTo(cartao);
+
+                $('<div class="titulo"></div>')
+                    .text(obterTitulo(item))
+                    .appendTo(cartao);
+
+                cartao.on('hover:enter', function () {
+                    Lampa.Activity.push({
+                        url: '',
+                        title: obterTitulo(item),
+                        component: 'brasil_ptbr_detalhes',
+                        item: item
+                    });
+                });
+
+                gradeInterna.append(cartao);
+            });
+
+            grade.append(gradeInterna);
+
+            if (totalPaginas > 1) {
+                var anterior = $(
+                    '<div class="selector brasil-ptbr-botao">Anterior</div>'
+                );
+
+                var proxima = $(
+                    '<div class="selector brasil-ptbr-botao">Próxima</div>'
+                );
+
+                var indicador = $('<div></div>').text(
+                    'Página ' + paginaAtual + ' de ' + totalPaginas
+                );
+
+                anterior.on('hover:enter', function () {
+                    if (paginaAtual > 1) {
+                        paginaAtual--;
+                        desenharCartoes(lista);
+                    }
+                });
+
+                proxima.on('hover:enter', function () {
+                    if (paginaAtual < totalPaginas) {
+                        paginaAtual++;
+                        desenharCartoes(lista);
+                    }
+                });
+
+                paginacao.append(anterior, indicador, proxima);
+            }
+        }
+
+        function atualizar() {
+            desenharCartoes(filtrar(catalogos[tipoAtual]));
+        }
+
+        function carregar() {
+            mensagem.text('Carregando catálogo...');
+            grade.empty();
+
+            consultarAPI(
+                tipoAtual,
+                paginaAtual,
+                pesquisaAtual,
+                function (lista) {
+                    atualizarGeneros();
+                    atualizar();
+                },
+                function (erro) {
+                    mensagem.text(erro);
+                }
+            );
+        }
+
+        function mudarTipo(tipo) {
+            tipoAtual = tipo;
+            paginaAtual = 1;
+            pesquisaAtual = '';
+            generoAtual = '';
+            busca.val('');
+            seletorGenero.val('');
+
+            abaFilmes.toggleClass(
+                'selecionado',
+                tipoAtual === 'filmes'
+            );
+
+            abaSeries.toggleClass(
+                'selecionado',
+                tipoAtual === 'series'
+            );
+
+            carregar();
+        }
+
+        abaFilmes.on('hover:enter', function () {
+            mudarTipo('filmes');
+        });
+
+        abaSeries.on('hover:enter', function () {
+            mudarTipo('series');
+        });
+
+        botaoBuscar.on('hover:enter', function () {
+            pesquisaAtual = busca.val() || '';
+            paginaAtual = 1;
+            carregar();
+        });
+
+        busca.on('keydown', function (evento) {
+            if (evento.key === 'Enter') {
+                pesquisaAtual = busca.val() || '';
+                paginaAtual = 1;
+                carregar();
+            }
+        });
+
+        seletorGenero.on('change', function () {
+            generoAtual = $(this).val() || '';
+            paginaAtual = 1;
+            atualizar();
+        });
+
+        seletorOrdem.on('change', function () {
+            ordemAtual = $(this).val();
+            atualizar();
+        });
+
+        this.create = function () {
+            registrarCSS();
+            mudarTipo('filmes');
+            return this.render();
+        };
+
+        this.start = function () {};
+
+        this.render = function () {
+            return html;
+        };
+
+        this.stop = function () {
+            cancelarRequisicao();
+        };
+
+        this.destroy = function () {
+            cancelarRequisicao();
+            html.remove();
+        };
+    }
+
+    /* =================================
+       CONFIGURAÇÕES
+    ================================= */
+
+    function registrarConfiguracoes() {
+        if (!Lampa.SettingsApi) return;
+
+        Lampa.SettingsApi.addComponent({
+            component: ID,
+            name: 'BRASIL PT-BR',
+            icon: 'language'
+        });
+
+        Lampa.SettingsApi.addParam({
+            component: ID,
+            param: {
+                name: API_KEY,
+                type: 'input',
+                default: ''
+            },
+            field: {
+                name: 'Endereço da API',
+                description: 'URL da fonte compatível com o catálogo.'
+            }
+        });
+    }
+
+    /* =================================
+       REGISTRO DOS COMPONENTES
+    ================================= */
+
+    function registrarComponentes() {
+        if (!Lampa.Component.get(ID)) {
+            Lampa.Component.add(ID, TelaPrincipalPTBR);
+        }
+
+        if (!Lampa.Component.get(ID + '_detalhes')) {
+            Lampa.Component.add(
+                ID + '_detalhes',
+                TelaDetalhesPTBR
+            );
+        }
+    }
+
+    /* =================================
+       MENU
+    ================================= */
+
+    function registrarMenu() {
+        if (!window.jQuery) return;
+
+        var menu = $('.menu .menu__list').eq(0);
+
+        if (!menu.length) return;
+
+        if (menu.find('[data-brasil-ptbr]').length) return;
+
+        var botao = $(
+            '<li class="menu__item selector" data-brasil-ptbr="1">' +
+            '<div class="menu__text">BRASIL PT-BR</div>' +
+            '</li>'
+        );
+
+        botao.on('hover:enter', function () {
+            Lampa.Activity.push({
+                url: '',
+                title: 'BRASIL PT-BR',
+                component: ID,
+                page: 1
+            });
+        });
+
+        menu.append(botao);
+    }
+
+    /* =================================
+       INICIALIZAÇÃO
+    ================================= */
+
+    function iniciar() {
+        if (typeof Lampa === 'undefined') return;
+
+        try {
+            registrarCSS();
+            registrarComponentes();
+            registrarConfiguracoes();
+            registrarMenu();
+
+            console.log(
+                '[BRASIL PT-BR] Plugin inicializado.'
+            );
+        } catch (erro) {
+            console.error(
+                '[BRASIL PT-BR] Erro de inicialização:',
+                erro
+            );
+        }
+    }
+
+    if (window.appready) {
+        iniciar();
+    } else if (window.Lampa && Lampa.Listener) {
+        Lampa.Listener.follow('app', function (evento) {
+            if (evento.type === 'ready') {
+                iniciar();
+            }
+        });
+    }
+
+})();
